@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import matplotlib.pyplot as plt
+import numpy as np
 import mmcv
 import torch
 from mmcv.parallel import collate, scatter
@@ -100,7 +101,46 @@ def inference_segmentor(model, imgs):
     # forward the model
     with torch.no_grad():
         result = model(return_loss=False, rescale=True, **data)
-    return result
+        seg_pred = result.argmax(dim=1)
+    return seg_pred.cpu().numpy()
+
+def inference_segmentor_remap(model, imgs):
+    """Inference image(s) with the segmentor.
+
+    Args:
+        model (nn.Module): The loaded segmentor.
+        imgs (str/ndarray or list[str/ndarray]): Either image files or loaded
+            images.
+        trainid_to_id (dict)
+
+    Returns:
+        (list[Tensor]): The segmentation result.
+    """
+    cfg = model.cfg
+    device = next(model.parameters()).device  # model device
+    # build the data pipeline
+    test_pipeline = [LoadImage()] + cfg.data.test.pipeline[1:]
+    test_pipeline = Compose(test_pipeline)
+    # prepare data
+    data = []
+    imgs = imgs if isinstance(imgs, list) else [imgs]
+    for img in imgs:
+        img_data = dict(img=img)
+        img_data = test_pipeline(img_data)
+        data.append(img_data)
+    data = collate(data, samples_per_gpu=len(imgs))
+    if next(model.parameters()).is_cuda:
+        # scatter to specified GPU
+        data = scatter(data, [device])[0]
+    else:
+        data['img_metas'] = [i.data[0] for i in data['img_metas']]
+
+    # forward the model
+    with torch.no_grad():
+        result = model(return_loss=False, rescale=True, **data)
+    seg = result[0]
+
+    return seg
 
 
 def show_result_pyplot(model,
